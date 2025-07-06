@@ -1,0 +1,6 @@
+# Ignora i file di dati generati
+*.csv
+
+# Ignora i file di cache di Python
+__pycache__/
+*.pyc
