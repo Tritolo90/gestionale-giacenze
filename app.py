@@ -1,168 +1,124 @@
+# app.py (versione con correzione nome colonna 'Stato')
 import streamlit as st
 import pandas as pd
-import numpy as np
 import os
-import glob
-import re
-from datetime import datetime
 
 st.set_page_config(layout="wide")
 st.title("Gestionale Giacenze 📦")
 
-# --- PERCORSI DEI FILE E DELLE CARTELLE ---
-FOLDER_DIGIGEM = "Digigem"
-FOLDER_SAP = "SAP"
-FILE_NAV = "NAV.xlsx"
-FILE_ANAGRAFICA = 'anagrafica_fornitori.csv'
-FILE_LAST_UPDATE = 'last_update.txt'
-FILE_DETTAGLIO_OUTPUT = "inventario_dettagliato_finale.csv"
-FILE_RIEPILOGO_OUTPUT = "riepilogo_per_magazzino.csv"
+# --- FUNZIONE PER CARICARE I DATI ---
+@st.cache_data
+def load_data(file_path):
+    if not os.path.exists(file_path):
+        return None
+    try:
+        dtype_map = {
+            'NMU': str, 'serial_number_tim': str, 'Fornitore/Stato': str, 
+            'serial_number_forn': str, 'status': str,
+            'cod_terr_sap': str, 'status_regman': str, 'Stato': str
+        }
+        return pd.read_csv(file_path, dtype=dtype_map)
+    except Exception as e:
+        st.error(f"Errore nel caricamento del file {file_path}: {e}")
+        return None
+
+# Caricamento dei dataset
+df_dettaglio = load_data("inventario_dettagliato_finale.csv")
+df_riepilogo_magazzino = load_data("riepilogo_per_magazzino.csv")
+
+# ===========================================================================
+# === LA MODIFICA CHIAVE È QUI: Rendiamo il nome della colonna coerente     ===
+# ===========================================================================
+if df_dettaglio is not None and 'Fornitore/Stato' in df_dettaglio.columns:
+    df_dettaglio.rename(columns={'Fornitore/Stato': 'Stato'}, inplace=True)
 
 
-# ==============================================================================
-# === LA LOGICA DI ELABORAZIONE DATI È ORA IN UNA FUNZIONE CON CACHE            ===
-# ==============================================================================
+# Creazione delle schede
+tab1, tab2, tab3 = st.tabs(["Ricerca Seriale Dettagliata", "Riepilogo per Magazzino", "🔎 Ricerca Libera"])
 
-@st.cache_data(ttl=3600) # Mette in cache i dati per 1 ora
-def process_all_data():
-    """
-    Esegue l'intera pipeline di elaborazione dati e restituisce i due DataFrame finali.
-    Questa funzione viene messa in cache per velocità.
-    """
-    
-    # --- Funzioni di supporto interne ---
-    def rinomina_file_sap_in_txt(folder_path):
-        files_xls = glob.glob(os.path.join(folder_path, "*.xls*"))
-        if files_xls:
-            for file_path in files_xls:
-                root, _ = os.path.splitext(file_path)
-                new_path = root + ".txt"
-                if not os.path.exists(new_path):
-                    os.rename(file_path, new_path)
-        return glob.glob(os.path.join(folder_path, "*.txt"))
-
-    def parse_sap_file_manually(file_path):
-        with open(file_path, 'r', encoding='utf-16') as f:
-            lines = [line.strip() for line in f.readlines()]
-        clean_data_rows = []; current_mag = "N/D"
-        for line in lines:
-            fields = re.split(r'\t+', line)
-            if not fields or not fields[0]: continue
-            if fields[0].strip() == "IMSU" and len(fields) > 1:
-                current_mag = fields[1].strip(); continue
-            if fields[0].strip().isdigit() and len(fields) > 6:
-                try:
-                    clean_data_rows.append({'Materiale': fields[0].strip(),'mag': current_mag,'Descrizione': fields[1].strip(),'Qtà Disponibile': fields[6].strip()})
-                except IndexError: continue
-        return pd.DataFrame(clean_data_rows)
-    
-    # ... (le altre funzioni di supporto rimangono le stesse)
-
-    # --- INIZIO PIPELINE ---
-    
-    # FASE 1
-    csv_files = glob.glob(os.path.join(FOLDER_DIGIGEM, "*.csv"))
-    df_totale_csv = pd.concat([pd.read_csv(f, sep=',', encoding='latin1', low_memory=False) for f in csv_files], ignore_index=True)
-    df_totale_csv.rename(columns={'cod_nmu': 'NMU', 'descr_impresa_utilizzo': 'Fornitore'}, inplace=True)
-    df_totale_csv.columns = df_totale_csv.columns.str.strip()
-    
-    df_nav = pd.read_excel(FILE_NAV, sheet_name="Foglio1")
-    cols_to_drop_nav = ["Nr. Articolo", "Nr. Seriale 2", "Nr. Lotto", "Tipo di Documento", "Nr. Documento", "Nr. Riga Documento", "Tipo Origine Custom", "Quantità", "Cod. Ubicazione", "Cod. Progetto", "Aperto", "Nr. Ordine Bar Code", "Nr. Movimento Articolo", "Tipo origine", "Nr. Origine"]
-    df_nav.drop(columns=cols_to_drop_nav, inplace=True, errors='ignore')
-    df_nav['Data di Registrazione'] = pd.to_datetime(df_nav['Data di Registrazione'], errors='coerce')
-    df_nav.sort_values(by=["Data di Registrazione", "Nr. Movimento"], ascending=[False, False], inplace=True)
-    df_nav.drop_duplicates(subset=["Nr. Seriale"], keep='first', inplace=True)
-    df_nav.rename(columns={"Nr. Seriale": "serial_number_tim"}, inplace=True)
-    df_nav.columns = df_nav.columns.str.strip()
-    
-    df_merged_detail = pd.merge(df_totale_csv, df_nav, on='serial_number_tim', how='left')
-    
-    validi = ["Reso Carico", "Carico", "Cambio Progetto", "Trasf. in Ingresso", "Rett. Positiva", "Trasf. in Uscita", "Rett. Negativa"]
-    conditions = [ df_merged_detail['Tipo Movimento'].eq("Rientro"), df_merged_detail['Subappaltatore'].notna() & df_merged_detail['Subappaltatore'].ne(""), df_merged_detail['Cod. Risorsa Caposquadra'].notna() & df_merged_detail['Cod. Risorsa Caposquadra'].ne(""), df_merged_detail['Tipo Movimento'].isin(validi), (pd.to_datetime(df_merged_detail['createdAt'], errors='coerce').dt.year <= 2023) ]
-    choices = [ "Carico", df_merged_detail['Subappaltatore'], df_merged_detail['Cod. Risorsa Caposquadra'], df_merged_detail['Tipo Movimento'], "ANTE 2023" ]
-    df_merged_detail['Stato'] = np.select(conditions, choices, default='NON IN NAV')
-
-    df_final_detail = df_merged_detail # Continuiamo a lavorare su questo per aggiungere i nomi fornitori
-    
-    if os.path.exists(FILE_ANAGRAFICA):
-        df_anagrafica = pd.read_csv(FILE_ANAGRAFICA, sep=';', dtype=str)
-        df_anagrafica['Codice'] = df_anagrafica['Codice'].str.strip()
-        df_final_detail['CodiceJoin'] = df_final_detail['Stato'].astype(str).str.extract(r'(\d+)').fillna('0')
-        df_final_detail = pd.merge(df_final_detail, df_anagrafica, left_on='CodiceJoin', right_on='Codice', how='left')
-        df_final_detail['Fornitore/Stato'] = df_final_detail['Nome'].fillna(df_final_detail['Stato'])
-        df_final_detail.drop(columns=['CodiceJoin', 'Codice', 'Nome'], inplace=True, errors='ignore')
+# --- Scheda 1: Ricerca Seriale per Fornitore/NMU ---
+with tab1:
+    st.header("Ricerca Guidata per Fornitore e NMU")
+    if df_dettaglio is None:
+        st.error("File dati di dettaglio ('inventario_dettagliato_finale.csv') non trovato.")
     else:
-        df_final_detail.rename(columns={'Stato': 'Fornitore/Stato'}, inplace=True)
+        df_dettaglio_tab1 = df_dettaglio.copy()
+        df_dettaglio_tab1['Stato'] = df_dettaglio_tab1['Stato'].fillna('')
+        df_dettaglio_tab1 = df_dettaglio_tab1.dropna(subset=['NMU'])
+        
+        stati_fissi = [ "Carico", "ANTE 2023", "NON IN NAV", "Reso Carico", "Cambio Progetto", "Trasf. in Ingresso", "Rett. Positiva", "Trasf. in Uscita", "Rett. Negativa", "A MAGAZZINO", "INSTALLATO", "IN TRANSITO", "GUASTO" ]
+        tutti_stati = df_dettaglio_tab1['Stato'].unique()
+        lista_fornitori = ["Seleziona un fornitore..."] + sorted([s for s in tutti_stati if s not in stati_fissi and s != ''])
+        
+        fornitore_selezionato = st.selectbox("1. Scegli il Fornitore o Stato", lista_fornitori, key="forn_dettaglio")
+        
+        if fornitore_selezionato != "Seleziona un fornitore...":
+            df_per_fornitore = df_dettaglio_tab1[df_dettaglio_tab1['Stato'] == fornitore_selezionato].copy()
+            
+            df_per_fornitore['NMU_con_desc'] = df_per_fornitore['NMU'] + " - " + df_per_fornitore['desc_nmu'].fillna('')
+            lista_nmu = ["Seleziona un NMU..."] + sorted(df_per_fornitore['NMU_con_desc'].unique().tolist())
+            
+            nmu_selezionato_display = st.selectbox("2. Scegli l'NMU", lista_nmu, key="nmu_dettaglio")
+            
+            if nmu_selezionato_display != "Seleziona un NMU...":
+                nmu_reale = nmu_selezionato_display.split(" - ")[0]
+                df_finale = df_per_fornitore[df_per_fornitore['NMU'] == nmu_reale]
+                
+                colonne_da_visualizzare = ['serial_number_tim', 'serial_number_forn', 'status', 'cod_terr_sap', 'status_regman', 'desc_nmu', 'Data di Registrazione']
+                colonne_esistenti = [col for col in colonne_da_visualizzare if col in df_finale.columns]
+                
+                st.markdown(f"#### Dettaglio per NMU: **{nmu_reale}**")
+                st.write(f"**{len(df_finale)}** seriali trovati per lo stato/fornitore: **{fornitore_selezionato}**")
+                st.dataframe(df_finale[colonne_esistenti], use_container_width=True, hide_index=True)
 
-    final_cols_detail = ['NMU', 'desc_nmu', 'Fornitore/Stato', 'serial_number_tim', 'serial_number_forn', 'status', 'cod_terr_sap', 'status_regman', 'Data di Registrazione']
-    df_final_detail = df_final_detail[[c for c in final_cols_detail if c in df_final_detail.columns]]
-    df_final_detail.to_csv(FILE_DETTAGLIO_OUTPUT, index=False)
-    
-    # FASE 2
-    sap_txt_files = rinomina_file_sap_in_txt(FOLDER_SAP)
-    if not sap_txt_files:
-        df_final_summary = pd.DataFrame() # Crea un dataframe vuoto se non ci sono file SAP
+# --- Scheda 2: Riepilogo per Magazzino ---
+with tab2:
+    st.header("Riepilogo Giacenze per Magazzino")
+    if df_riepilogo_magazzino is None:
+        st.error("File di riepilogo ('riepilogo_per_magazzino.csv') non trovato.")
     else:
-        lista_df_sap = [parse_sap_file_manually(f) for f in sap_txt_files]
-        df_sap = pd.concat(lista_df_sap, ignore_index=True)
-        for col in ["Qtà Disponibile", "Materiale"]: df_sap[col] = pd.to_numeric(df_sap[col].str.replace(',', '.'), errors='coerce').fillna(0)
-        sap_agg_rules = {'Descrizione': 'first', 'Qtà Disponibile': 'sum'}
-        giacenze_sap = df_sap.groupby(['Materiale', 'mag']).agg(sap_agg_rules).reset_index()
-        # ... resto della logica FASE 2 ...
-        df_final_summary = giacenze_sap # Semplificazione per l'esempio
+        df_riepilogo_magazzino['NMU'] = df_riepilogo_magazzino['NMU'].astype(str)
+        col1, col2 = st.columns(2)
+        with col1:
+            province_disponibili = ["Tutte"] + sorted(df_riepilogo_magazzino['Provincia'].unique().tolist())
+            provincia_selezionata = st.selectbox("Filtra per Provincia:", province_disponibili)
+        with col2:
+            nmu_da_cercare = st.text_input("Filtra per NMU:", key="nmu_riepilogo")
+        
+        df_visualizzato = df_riepilogo_magazzino
+        if provincia_selezionata != "Tutte":
+            df_visualizzato = df_visualizzato[df_visualizzato['Provincia'] == provincia_selezionata]
+        if nmu_da_cercare:
+            df_visualizzato = df_visualizzato[df_visualizzato['NMU'].str.startswith(nmu_da_cercare)]
+        st.dataframe(df_visualizzato, use_container_width=True, hide_index=True)
 
-    df_final_summary.to_csv(FILE_RIEPILOGO_OUTPUT, index=False)
 
-    # Scrive il timestamp e restituisce i dati
-    with open(FILE_LAST_UPDATE, "w") as f:
-        f.write(datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
-    
-    return df_final_detail, df_final_summary
-
-
-# --- INTERFACCIA UTENTE ---
-
-# Funzione per mostrare l'ultimo aggiornamento
-def show_last_update():
-    if os.path.exists(FILE_LAST_UPDATE):
-        with open(FILE_LAST_UPDATE, "r") as f:
-            st.caption(f"Dati aggiornati il: {f.read()}")
+# --- Scheda 3: Ricerca Libera ---
+with tab3:
+    st.header("Ricerca Libera per Seriale o NMU")
+    if df_dettaglio is None:
+        st.error("File dati di dettaglio ('inventario_dettagliato_finale.csv') non trovato.")
     else:
-        st.caption("Dati non ancora generati.")
-
-# Pulsante di aggiornamento e timestamp
-col1, col2 = st.columns([1, 3])
-with col1:
-    if st.button("🔄 Aggiorna Dati"):
-        # Pulisce la cache per forzare il ricalcolo
-        st.cache_data.clear()
-        # Mostra un messaggio di stato generico
-        with st.spinner("Elaborazione in corso... Questo potrebbe richiedere alcuni minuti."):
-            process_all_data() # Chiama la funzione che ora è cachable
-        st.success("Elaborazione completata!")
-        # Non serve st.rerun() perché Streamlit lo fa già dopo un'azione sul bottone
-
-with col2:
-    show_last_update()
-
-st.markdown("---")
-
-# Se i file di output non esistono, chiedi all'utente di aggiornare
-if not os.path.exists(FILE_DETTAGLIO_OUTPUT) or not os.path.exists(FILE_RIEPILOGO_OUTPUT):
-    st.warning("I file di dati non sono stati ancora generati. Clicca sul pulsante 'Aggiorna Dati' per avviare la prima elaborazione.")
-else:
-    # Creazione delle schede
-    tab1, tab2, tab3 = st.tabs(["Ricerca Seriale Dettagliata", "Riepilogo per Magazzino", "🔎 Ricerca Libera"])
-    
-    # ... (Il resto del codice delle schede rimane identico a prima) ...
-    with tab1:
-        st.header("Ricerca Guidata per Fornitore e NMU")
-        # ...
-
-    with tab2:
-        st.header("Riepilogo Giacenze per Magazzino")
-        # ...
-
-    with tab3:
-        st.header("Ricerca Libera per Seriale o NMU")
-        # ...
+        df_dettaglio_tab3 = df_dettaglio.copy()
+        campo_di_ricerca = st.radio(
+            "Cerca per:",
+            ('NMU', 'Seriale TIM', 'Seriale Fornitore'),
+            horizontal=True,
+            key="campo_ricerca"
+        )
+        valore_ricerca = st.text_input("Inserisci un valore di ricerca parziale:", key="valore_ricerca")
+        if valore_ricerca:
+            if campo_di_ricerca == 'NMU':
+                risultati = df_dettaglio_tab3[df_dettaglio_tab3['NMU'].str.contains(valore_ricerca, case=False, na=False)]
+            elif campo_di_ricerca == 'Seriale TIM':
+                risultati = df_dettaglio_tab3[df_dettaglio_tab3['serial_number_tim'].str.contains(valore_ricerca, case=False, na=False)]
+            else:
+                risultati = df_dettaglio_tab3[df_dettaglio_tab3['serial_number_forn'].str.contains(valore_ricerca, case=False, na=False)]
+            
+            st.write(f"Trovati **{len(risultati)}** risultati.")
+            if not risultati.empty:
+                colonne_da_mostrare = ['Stato', 'NMU', 'desc_nmu', 'serial_number_tim', 'serial_number_forn']
+                colonne_esistenti = [col for col in colonne_da_mostrare if col in risultati.columns]
+                st.dataframe(risultati[colonne_esistenti], use_container_width=True, hide_index=True)
+        else:
+            st.info("Inserisci un valore nella casella di ricerca per visualizzare i risultati.")
