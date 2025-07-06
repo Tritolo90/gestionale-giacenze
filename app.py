@@ -1,3 +1,4 @@
+# app.py (versione definitiva con nome colonna 'Fornitore/Stato' corretto)
 import streamlit as st
 import pandas as pd
 import os
@@ -5,16 +6,14 @@ import os
 st.set_page_config(layout="wide")
 st.title("Gestionale Giacenze 📦")
 
-# --- FUNZIONE PER CARICARE I DATI ---
 @st.cache_data
 def load_data(file_path):
     if not os.path.exists(file_path):
         return None
     try:
-        # Forziamo il tipo di dato per le colonne importanti
         dtype_map = {
-            'NMU': str, 'serial_number_tim': str, 'Stato': str, 
-            'Fornitore': str, 'serial_number_forn': str, 'status': str,
+            'NMU': str, 'serial_number_tim': str, 'Fornitore/Stato': str, 
+            'serial_number_forn': str, 'status': str,
             'cod_terr_sap': str, 'status_regman': str, 'Provincia': str
         }
         return pd.read_csv(file_path, dtype=dtype_map)
@@ -26,31 +25,37 @@ def load_data(file_path):
 df_dettaglio = load_data("inventario_dettagliato_finale.csv")
 df_riepilogo_magazzino = load_data("riepilogo_per_magazzino.csv")
 
-# Se i dati non esistono, mostra un messaggio di aiuto
+
 if df_dettaglio is None or df_riepilogo_magazzino is None:
-    st.warning("Uno o entrambi i file di dati non sono stati trovati. Esegui prima `python elabora_dati.py` per generarli.")
+    st.warning("File di dati non trovati. Se è la prima volta che avvii l'app su un nuovo ambiente, assicurati che i file CSV siano presenti nel repository o che lo script di elaborazione sia stato eseguito.")
 else:
     # Creazione delle schede
     tab1, tab2, tab3 = st.tabs(["Ricerca Seriale Dettagliata", "Riepilogo per Magazzino", "🔎 Ricerca Libera"])
 
-    # Scheda 1: Ricerca Seriale per Fornitore/NMU
+    # --- Scheda 1: Ricerca Seriale per Fornitore/NMU ---
     with tab1:
         st.header("Ricerca Guidata per Fornitore e NMU")
         
         df_dettaglio_tab1 = df_dettaglio.copy()
-        df_dettaglio_tab1['Stato'] = df_dettaglio_tab1['Stato'].fillna('')
-        df_dettaglio_tab1.dropna(subset=['NMU'], inplace=True)
+        
+        # ===========================================================================
+        # === LA MODIFICA CHIAVE È QUI: Usiamo 'Fornitore/Stato' ovunque          ===
+        # ===========================================================================
+        df_dettaglio_tab1['Fornitore/Stato'] = df_dettaglio_tab1['Fornitore/Stato'].fillna('')
+        df_dettaglio_tab1 = df_dettaglio_tab1.dropna(subset=['NMU'])
         
         stati_fissi = [ "Carico", "ANTE 2023", "NON IN NAV", "Reso Carico", "Cambio Progetto", "Trasf. in Ingresso", "Rett. Positiva", "Trasf. in Uscita", "Rett. Negativa", "A MAGAZZINO", "INSTALLATO", "IN TRANSITO", "GUASTO" ]
-        tutti_stati = df_dettaglio_tab1['Stato'].unique()
+        tutti_stati = df_dettaglio_tab1['Fornitore/Stato'].unique()
         lista_fornitori = ["Seleziona un fornitore..."] + sorted([s for s in tutti_stati if s not in stati_fissi and s != ''])
         
         fornitore_selezionato = st.selectbox("1. Scegli il Fornitore o Stato", lista_fornitori, key="forn_dettaglio")
         
         if fornitore_selezionato != "Seleziona un fornitore...":
-            df_per_fornitore = df_dettaglio_tab1[df_dettaglio_tab1['Stato'] == fornitore_selezionato].copy()
+            df_per_fornitore = df_dettaglio_tab1[df_dettaglio_tab1['Fornitore/Stato'] == fornitore_selezionato].copy()
+            
             df_per_fornitore['NMU_con_desc'] = df_per_fornitore['NMU'] + " - " + df_per_fornitore['desc_nmu'].fillna('')
             lista_nmu = ["Seleziona un NMU..."] + sorted(df_per_fornitore['NMU_con_desc'].unique().tolist())
+            
             nmu_selezionato_display = st.selectbox("2. Scegli l'NMU", lista_nmu, key="nmu_dettaglio")
             
             if nmu_selezionato_display != "Seleziona un NMU...":
@@ -64,7 +69,7 @@ else:
                 st.write(f"**{len(df_finale)}** seriali trovati per lo stato/fornitore: **{fornitore_selezionato}**")
                 st.dataframe(df_finale[colonne_esistenti], use_container_width=True, hide_index=True)
 
-    # Scheda 2: Riepilogo per Magazzino
+    # --- Scheda 2: Riepilogo per Magazzino ---
     with tab2:
         st.header("Riepilogo Giacenze per Magazzino")
         df_riepilogo_magazzino['NMU'] = df_riepilogo_magazzino['NMU'].astype(str)
@@ -82,12 +87,14 @@ else:
             df_visualizzato = df_visualizzato[df_visualizzato['NMU'].str.startswith(nmu_da_cercare)]
         st.dataframe(df_visualizzato, use_container_width=True, hide_index=True)
 
-    # Scheda 3: Ricerca Libera
+    # --- Scheda 3: Ricerca Libera ---
     with tab3:
         st.header("Ricerca Libera per Seriale o NMU")
         df_dettaglio_tab3 = df_dettaglio.copy()
+        # Rinominiamo la colonna per coerenza di visualizzazione
         if 'Fornitore/Stato' in df_dettaglio_tab3.columns:
             df_dettaglio_tab3.rename(columns={'Fornitore/Stato': 'Stato'}, inplace=True)
+            
         campo_di_ricerca = st.radio("Cerca per:",('NMU', 'Seriale TIM', 'Seriale Fornitore'), horizontal=True, key="campo_ricerca")
         valore_ricerca = st.text_input("Inserisci un valore di ricerca parziale:", key="valore_ricerca")
         if valore_ricerca:
