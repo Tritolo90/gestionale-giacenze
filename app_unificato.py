@@ -35,10 +35,12 @@ def process_all_data():
         current = "N/D"
         for line in lines:
             parts = re.split(r'\t+', line)
-            if not parts or not parts[0]: continue
-            if parts[0].strip()=="IMSU" and len(parts)>1:
-                current = parts[1].strip(); continue
-            if parts[0].strip().isdigit() and len(parts)>6:
+            if not parts or not parts[0]:
+                continue
+            if parts[0].strip() == "IMSU" and len(parts) > 1:
+                current = parts[1].strip()
+                continue
+            if parts[0].strip().isdigit() and len(parts) > 6:
                 rows.append({
                     'Materiale': parts[0].strip(),
                     'mag': current,
@@ -158,17 +160,15 @@ if 'loaded' not in st.session_state:
     st.session_state.last_update = "Mai"
 
 c1, c2, _ = st.columns([2,2,6])
-with c1:
-    if st.button("🔄 Carica Dati"):
-        st.session_state.df_detail, st.session_state.df_summary = process_all_data()
-        st.session_state.loaded = True
-        st.session_state.last_update = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        st.experimental_rerun()
-with c2:
-    if st.button("🧹 Pulisci Cache"):
-        st.cache_data.clear()
-        st.session_state.loaded = False
-        st.success("Cache pulita.")
+if c1.button("🔄 Carica Dati"):
+    st.session_state.df_detail, st.session_state.df_summary = process_all_data()
+    st.session_state.loaded = True
+    st.session_state.last_update = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+if c2.button("🧹 Pulisci Cache"):
+    st.cache_data.clear()
+    st.session_state.loaded = False
+    st.success("Cache pulita.")
 
 st.caption(f"Ultimo aggiornamento: {st.session_state.last_update}")
 st.markdown("---")
