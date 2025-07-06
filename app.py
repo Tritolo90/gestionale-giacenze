@@ -50,7 +50,10 @@ def process_all_data():
                 except IndexError: continue
         return pd.DataFrame(clean_data_rows)
 
-    # --- FASE 1: Dati di Dettaglio ---
+    # --- INIZIO PIPELINE ---
+    
+    # FASE 1: Dati di Dettaglio
+    st.write("FASE 1/2: Elaborazione dati di dettaglio (Digigem e NAV)...")
     csv_files = glob.glob(os.path.join(FOLDER_DIGIGEM, "*.csv"))
     df_totale_csv = pd.concat([pd.read_csv(f, sep=',', encoding='latin1', low_memory=False) for f in csv_files], ignore_index=True)
     df_totale_csv.rename(columns={'cod_nmu': 'NMU'}, inplace=True)
@@ -70,11 +73,30 @@ def process_all_data():
     validi = ["Reso Carico", "Carico", "Cambio Progetto", "Trasf. in Ingresso", "Rett. Positiva", "Trasf. in Uscita", "Rett. Negativa"]
     conditions = [ df_merged_detail['Tipo Movimento'].eq("Rientro"), df_merged_detail['Subappaltatore'].notna() & df_merged_detail['Subappaltatore'].ne(""), df_merged_detail['Cod. Risorsa Caposquadra'].notna() & df_merged_detail['Cod. Risorsa Caposquadra'].ne(""), df_merged_detail['Tipo Movimento'].isin(validi), (pd.to_datetime(df_merged_detail['createdAt'], errors='coerce').dt.year <= 2023) ]
     choices = [ "Carico", df_merged_detail['Subappaltatore'], df_merged_detail['Cod. Risorsa Caposquadra'], df_merged_detail['Tipo Movimento'], "ANTE 2023" ]
-    df_merged_detail['Stato'] = np.select(conditions, choices, default='NON IN NAV')
+    df_merged_detail['Stato_Originale'] = np.select(conditions, choices, default='NON IN NAV')
+
+    # =================================================================================
+    # === BLOCCO DI ARRICCHIMENTO FORNITORI REINSERITO CORRETTAMENTE
+    # =================================================================================
+    if os.path.exists(FILE_ANAGRAFICA):
+        st.write("Trovata anagrafica fornitori, arricchimento in corso...")
+        df_anagrafica = pd.read_csv(FILE_ANAGRAFICA, sep=';', dtype=str).dropna()
+        df_anagrafica['CodiceJoin'] = df_anagrafica['Codice'].str.extract(r'(\d+)').fillna('0')
+        
+        df_merged_detail['CodiceJoin'] = df_merged_detail['Stato_Originale'].astype(str).str.extract(r'(\d+)').fillna('0')
+        
+        df_merged_detail = pd.merge(df_merged_detail, df_anagrafica[['CodiceJoin', 'Nome']], on='CodiceJoin', how='left')
+        
+        df_merged_detail['Stato'] = df_merged_detail['Nome'].fillna(df_merged_detail['Stato_Originale'])
+        df_merged_detail.drop(columns=['CodiceJoin', 'Nome', 'Stato_Originale'], inplace=True, errors='ignore')
+    else:
+        st.warning(f"File anagrafica '{FILE_ANAGRAFICA}' non trovato. I nomi dei fornitori non verranno arricchiti.")
+        df_merged_detail.rename(columns={'Stato_Originale': 'Stato'}, inplace=True)
     
     final_cols_detail = ['NMU', 'desc_nmu', 'Stato', 'serial_number_tim', 'serial_number_forn', 'status', 'cod_terr_sap', 'status_regman', 'Data di Registrazione']
     df_dettaglio = df_merged_detail[[c for c in final_cols_detail if c in df_merged_detail.columns]]
 
+ 
     # --- FASE 2: Dati Aggregati ---
     sap_txt_files = rinomina_file_sap_in_txt(FOLDER_SAP)
     if not sap_txt_files:
