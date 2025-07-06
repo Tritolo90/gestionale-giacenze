@@ -1,4 +1,4 @@
-# app.py (versione definitiva All-in-One per il deploy)
+# app.py (versione definitiva e completa con tutte le logiche corrette)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,7 +10,7 @@ from datetime import datetime
 st.set_page_config(layout="wide")
 st.title("Gestionale Giacenze 📦")
 
-# --- DEFINIZIONE DEI PERCORSI (relativi alla posizione di app.py) ---
+# --- DEFINIZIONE DEI PERCORSI ---
 FOLDER_DIGIGEM = "Digigem"
 FOLDER_SAP = "SAP"
 FILE_NAV = "NAV.xlsx"
@@ -51,8 +51,14 @@ def process_all_data():
                 except IndexError: continue
         return pd.DataFrame(clean_data_rows)
 
+    def carica_totale_csv_aggregato(df_dettaglio):
+        if 'cod_terr_sap' not in df_dettaglio.columns or 'NMU' not in df_dettaglio.columns: return pd.DataFrame(columns=['Materiale', 'mag', 'Conteggio'])
+        df_agg = df_dettaglio.groupby(['cod_terr_sap', 'NMU']).size().reset_index(name='Conteggio')
+        df_agg.rename(columns={'NMU': 'Materiale', 'cod_terr_sap': 'mag'}, inplace=True)
+        return df_agg
+
     def carica_giacenza_nav_semplice(file_path):
-        if not os.path.exists(file_path): return pd.DataFrame(columns=['Materiale', 'mag', 'Giacenza', 'Descrizione_NAV'])
+        if not os.path.exists(file_path): return None
         df = pd.read_excel(file_path, sheet_name="Foglio1")
         df.rename(columns={"Quantità": "Giacenza", "Nr. Articolo": "Materiale", "Cod. Ubicazione": "mag"}, inplace=True)
         aggregation_rules = {'Giacenza': 'sum'}
@@ -64,6 +70,8 @@ def process_all_data():
         return giacenze_nav
 
     # --- INIZIO PIPELINE ---
+    
+    # FASE 1: Dati di Dettaglio
     st.write("FASE 1/3: Elaborazione dati di dettaglio (Digigem e NAV)...")
     csv_files = glob.glob(os.path.join(FOLDER_DIGIGEM, "*.csv"))
     df_totale_csv = pd.concat([pd.read_csv(f, sep=',', encoding='latin1', low_memory=False) for f in csv_files], ignore_index=True)
@@ -86,15 +94,17 @@ def process_all_data():
     choices = [ "Carico", df_merged_detail['Subappaltatore'], df_merged_detail['Cod. Risorsa Caposquadra'], df_merged_detail['Tipo Movimento'], "ANTE 2023" ]
     df_merged_detail['Stato_Originale'] = np.select(conditions, choices, default='NON IN NAV')
 
+    # === BLOCCO DI ARRICCHIMENTO FORNITORI REINSERITO CORRETTAMENTE ===
     if os.path.exists(FILE_ANAGRAFICA):
+        st.write("... arricchimento nomi fornitori da anagrafica...")
         df_anagrafica = pd.read_csv(FILE_ANAGRAFICA, sep=';', dtype=str).dropna()
         df_anagrafica['CodiceJoin'] = df_anagrafica['Codice'].str.extract(r'(\d+)').fillna('0')
         df_merged_detail['CodiceJoin'] = df_merged_detail['Stato_Originale'].astype(str).str.extract(r'(\d+)').fillna('0')
-        df_merged_detail = pd.merge(df_merged_detail, df_anagrafica, left_on='CodiceJoin', right_on='Codice', how='left')
+        df_merged_detail = pd.merge(df_merged_detail, df_anagrafica, on='CodiceJoin', how='left')
         df_merged_detail['Stato'] = df_merged_detail['Nome'].fillna(df_merged_detail['Stato_Originale'])
         df_merged_detail.drop(columns=['CodiceJoin', 'Codice', 'Nome', 'Stato_Originale'], inplace=True, errors='ignore')
     else:
-        st.warning(f"File anagrafica '{FILE_ANAGRAFICA}' non trovato. I nomi dei fornitori non verranno arricchiti.")
+        st.warning(f"File anagrafica '{FILE_ANAGRAFICA}' non trovato.")
         df_merged_detail.rename(columns={'Stato_Originale': 'Stato'}, inplace=True)
     
     final_cols_detail = ['NMU', 'desc_nmu', 'Stato', 'serial_number_tim', 'serial_number_forn', 'status', 'cod_terr_sap', 'status_regman', 'Data di Registrazione']
@@ -133,8 +143,10 @@ def process_all_data():
     df_summary = pd.merge(df_summary, giacenze_nav, on=['Materiale', 'mag'], how='outer')
     df_summary.rename(columns={'Conteggio': 'Qtà Digigem', 'Giacenza': 'NAV.Giacenza', 'Qtà Disponibile': 'Qtà Disponibile(SAP)'}, inplace=True)
     
+    df_totale_csv.rename(columns={'Materiale': 'NMU'}, inplace=True)
     if 'desc_nmu' in df_totale_csv.columns:
-        anagrafica_digigem = df_totale_csv[['Materiale', 'desc_nmu']].dropna(subset=['Materiale', 'desc_nmu']).drop_duplicates(subset=['Materiale'])
+        anagrafica_digigem = df_totale_csv[['NMU', 'desc_nmu']].dropna(subset=['NMU', 'desc_nmu']).drop_duplicates(subset=['NMU'])
+        anagrafica_digigem.rename(columns={'NMU': 'Materiale'}, inplace=True)
         df_summary = pd.merge(df_summary, anagrafica_digigem, on='Materiale', how='left')
         df_summary['Descrizione'] = df_summary['Descrizione'].fillna(df_summary['desc_nmu'])
         df_summary.drop(columns=['desc_nmu'], inplace=True, errors='ignore')
@@ -161,39 +173,40 @@ def process_all_data():
     
     return df_dettaglio, df_riepilogo
 
-
 # --- INTERFACCIA UTENTE ---
+
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
     st.session_state.last_update = "Mai eseguito"
 
-col1, col2, col3 = st.columns([2, 2, 8])
+col1, col2 = st.columns([2, 5])
 with col1:
-    if st.button("🔄 Carica / Processa Dati", type="primary"):
-        st.session_state.df_dettaglio, st.session_state.df_riepilogo = process_all_data()
+    if st.button("🔄 Carica e Processa Dati", type="primary"):
+        df_d, df_r = process_all_data()
+        st.session_state.df_dettaglio = df_d
+        st.session_state.df_riepilogo = df_r
         st.session_state.data_loaded = True
         st.session_state.last_update = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        st.rerun()
-with col2:
-    if st.button("🧹 Pulisci Cache"):
-        st.cache_data.clear()
-        st.session_state.data_loaded = False
-        st.success("Cache pulita. Clicca di nuovo 'Carica Dati' per ripartire.")
+        st.success("Dati elaborati!")
         st.rerun()
 
-st.caption(f"Dati in memoria aggiornati il: {st.session_state.last_update}")
+with col2:
+     st.caption(f"Dati in memoria aggiornati il: {st.session_state.last_update}")
+
 st.markdown("---")
 
 if st.session_state.data_loaded:
     df_dettaglio = st.session_state.df_dettaglio
     df_riepilogo_magazzino = st.session_state.df_riepilogo
     
-    for col in ['Stato', 'NMU', 'serial_number_tim', 'serial_number_forn']:
-        if col in df_dettaglio.columns: df_dettaglio[col] = df_dettaglio[col].astype(str)
-    if 'NMU' in df_riepilogo_magazzino.columns: df_riepilogo_magazzino['NMU'] = df_riepilogo_magazzino['NMU'].astype(str)
+    if 'Stato' in df_dettaglio.columns:
+        df_dettaglio['Stato'] = df_dettaglio['Stato'].astype(str)
+    if 'NMU' in df_riepilogo_magazzino.columns:
+        df_riepilogo_magazzino['NMU'] = df_riepilogo_magazzino['NMU'].astype(str)
 
     tab1, tab2, tab3 = st.tabs(["Ricerca Seriale Dettagliata", "Riepilogo per Magazzino", "🔎 Ricerca Libera"])
     
+   
     with tab1:
         st.header("Ricerca Guidata per Fornitore e NMU")
         df_dettaglio_tab1 = df_dettaglio.copy()
