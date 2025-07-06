@@ -6,16 +6,18 @@ import os
 st.set_page_config(layout="wide")
 st.title("Gestionale Giacenze 📦")
 
+# --- FUNZIONE PER CARICARE I DATI ---
 @st.cache_data
 def load_data(file_path):
     if not os.path.exists(file_path):
         return None
     try:
+        # Leggiamo quasi tutto come testo per massima sicurezza
         dtype_map = {
             'NMU': str, 'serial_number_tim': str, 'Fornitore/Stato': str, 
             'serial_number_forn': str, 'status': str,
-            'cod_terr_sap': str, 'status_regman': str, 'Provincia': str,
-            'Stato': str # Assicura che anche la colonna Stato sia letta come testo
+            'cod_terr_sap': str, 'status_regman': str, 'Stato': str,
+            'Provincia': str
         }
         return pd.read_csv(file_path, dtype=dtype_map)
     except Exception as e:
@@ -26,12 +28,20 @@ def load_data(file_path):
 df_dettaglio = load_data("inventario_dettagliato_finale.csv")
 df_riepilogo_magazzino = load_data("riepilogo_per_magazzino.csv")
 
-# Rinominia le colonne in modo coerente e sicuro dopo il caricamento
-if df_dettaglio is not None and 'Fornitore/Stato' in df_dettaglio.columns:
-    df_dettaglio.rename(columns={'Fornitore/Stato': 'Stato'}, inplace=True)
+# ===========================================================================
+# === LA MODIFICA CHIAVE È QUI: Pulizia e standardizzazione dei tipi        ===
+# ===========================================================================
+if df_dettaglio is not None:
+    # Rinomina la colonna per coerenza
+    if 'Fornitore/Stato' in df_dettaglio.columns:
+        df_dettaglio.rename(columns={'Fornitore/Stato': 'Stato'}, inplace=True)
+    
+    # Assicura che la colonna 'Stato' sia sempre e solo testo, risolvendo il TypeError
+    if 'Stato' in df_dettaglio.columns:
+        df_dettaglio['Stato'] = df_dettaglio['Stato'].astype(str).fillna('')
+
 if df_riepilogo_magazzino is not None and 'Materiale' in df_riepilogo_magazzino.columns:
     df_riepilogo_magazzino.rename(columns={'Materiale': 'NMU'}, inplace=True)
-
 
 # Creazione delle schede
 tab1, tab2, tab3 = st.tabs(["Ricerca Seriale Dettagliata", "Riepilogo per Magazzino", "🔎 Ricerca Libera"])
@@ -43,15 +53,11 @@ with tab1:
         st.error("File dati di dettaglio ('inventario_dettagliato_finale.csv') non trovato.")
     else:
         df_dettaglio_tab1 = df_dettaglio.copy()
-        
-        # ===========================================================================
-        # === LA MODIFICA CHIAVE È QUI: Convertiamo tutto in testo PRIMA di usarlo ===
-        # ===========================================================================
-        df_dettaglio_tab1['Stato'] = df_dettaglio_tab1['Stato'].astype(str).fillna('')
-        df_dettaglio_tab1 = df_dettaglio_tab1.dropna(subset=['NMU'])
+        df_dettaglio_tab1.dropna(subset=['NMU', 'Stato'], inplace=True)
         
         stati_fissi = [ "Carico", "ANTE 2023", "NON IN NAV", "Reso Carico", "Cambio Progetto", "Trasf. in Ingresso", "Rett. Positiva", "Trasf. in Uscita", "Rett. Negativa", "A MAGAZZINO", "INSTALLATO", "IN TRANSITO", "GUASTO" ]
         tutti_stati = df_dettaglio_tab1['Stato'].unique()
+        # Ora che tutti gli stati sono stringhe, il sort funziona
         lista_fornitori = ["Seleziona un fornitore..."] + sorted([s for s in tutti_stati if s not in stati_fissi and s != ''])
         
         fornitore_selezionato = st.selectbox("1. Scegli il Fornitore o Stato", lista_fornitori, key="forn_dettaglio")
@@ -84,6 +90,8 @@ with tab2:
         df_riepilogo_magazzino['NMU'] = df_riepilogo_magazzino['NMU'].astype(str)
         col1, col2 = st.columns(2)
         with col1:
+            # Assicuriamoci che anche Provincia sia una stringa pulita
+            df_riepilogo_magazzino['Provincia'] = df_riepilogo_magazzino['Provincia'].astype(str).fillna('')
             province_disponibili = ["Tutte"] + sorted(df_riepilogo_magazzino['Provincia'].unique().tolist())
             provincia_selezionata = st.selectbox("Filtra per Provincia:", province_disponibili)
         with col2:
