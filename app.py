@@ -14,6 +14,7 @@ st.title("Gestionale Giacenze 📦")
 FOLDER_DIGIGEM = "Digigem"
 FOLDER_SAP = "SAP"
 FILE_NAV = "NAV.xlsx"
+FILE_ANAGRAFICA = 'anagrafica_fornitori.csv'
 
 # ==============================================================================
 # === FUNZIONE DI ELABORAZIONE DATI CON CACHE
